@@ -43,7 +43,10 @@ python etl_produtos_3s.py
 
 - Processa todos os arquivos `.xlsx` encontrados na pasta de downloads.
 - Ignora arquivos temporários do Excel que começam com `~$`.
-- Lê a aba `Source Data` para encontrar o campo `Selected Dates`.
+- Aceita arquivos em inglês e em português.
+- Lê a aba `Source Data`, `Dados de Origem` ou `Dados Origem`.
+- Procura o campo `Selected Dates`, `Datas Selecionadas` ou `Data Selecionada`.
+- Aceita datas nos formatos `MM/DD/YYYY`, `DD/MM/YYYY` e `YYYY-MM-DD`.
 - Só processa arquivos cujo período seja de um único dia.
 - Se a data inicial e final forem diferentes, lança exatamente este erro:
 
@@ -51,13 +54,16 @@ python etl_produtos_3s.py
 SÓ É POSSIVEL PROCESSAR INFORMAÇAO DE PRODUTOS REFERENTE A UM DIA
 ```
 
-- Lê a aba `Report` e mapeia apenas as colunas existentes na tabela.
+- Lê a aba `Report`, `Relatorio` ou `Relatório` e mapeia apenas as colunas existentes na tabela.
+- Aceita aliases em português e inglês para as colunas do relatório, como `Store/Loja`, `Name/Nome`, `Type/Tipo`, `Qty/Quantidade`, `Price/Preço` e `Total/Valor Total`.
 - Quando o arquivo tiver `Store Code` e `Store`, monta `store` como `0001 - Matriz`.
 - Remove espaços extras em campos de texto.
 - Converte `PLU (Items)` vazio ou `-` para `NULL`.
 - Converte `Qty`, `Price` e `Total` para número.
 - Ignora linhas vazias.
 - Antes do insert, faz `DELETE` por `data_informacao` e pelas lojas distintas presentes no arquivo.
+- Quando o `commit` do arquivo é concluído com sucesso, o `.xlsx` processado é removido da pasta.
+- Quando há erro ou quando o arquivo está sem dados, o `.xlsx` não é removido.
 - Em caso de erro em um arquivo, registra o erro e continua com os próximos.
 - Grava logs no terminal e em arquivo dentro da pasta `logs`.
 - Envia resumo final para o Telegram no mesmo estilo do bot de referência, quando configurado.

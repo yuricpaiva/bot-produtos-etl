@@ -17,17 +17,20 @@ from psycopg2.extras import execute_batch
 ERRO_DATA_INVALIDA = (
     "S\u00d3 \u00c9 POSSIVEL PROCESSAR INFORMA\u00c7AO DE PRODUTOS REFERENTE A UM DIA"
 )
-COLUNAS_OBRIGATORIAS_REPORT = [
-    "Store",
-    "PLU",
-    "PLU (Items)",
-    "Name",
-    "Type",
-    "Qty",
-    "Price",
-    "Total",
-]
-COLUNA_STORE_CODE = "Store Code"
+ABAS_SOURCE_DATA = ["Source Data", "Dados de Origem", "Dados Origem"]
+ABAS_REPORT = ["Report", "Relatorio", "Relatório"]
+CHAVES_SELECTED_DATES = ["Selected Dates", "Datas Selecionadas", "Data Selecionada"]
+MAPA_COLUNAS_REPORT = {
+    "store": ["Store", "Loja"],
+    "plu": ["PLU"],
+    "plu_item": ["PLU (Items)", "PLU (Itens)"],
+    "nome_produto": ["Name", "Nome"],
+    "tipo": ["Type", "Tipo"],
+    "quantidade": ["Qty", "Quantidade", "Qtde"],
+    "preco_unitario": ["Price", "Preco", "Preço", "Valor Unitario", "Valor Unitário"],
+    "valor_total": ["Total", "Valor Total"],
+}
+COLUNA_STORE_CODE_ALIASES = ["Store Code", "Codigo da Loja", "Código da Loja", "Cod Loja"]
 COLUNAS_TEXTO = ["store", "plu", "plu_item", "nome_produto", "tipo"]
 NOME_TABELA = "relatorio_produtos_3s"
 SCHEMA_PADRAO = "public"
@@ -179,6 +182,24 @@ def nome_tabela_qualificada(schema: str) -> str:
     return f"{schema}.{NOME_TABELA}"
 
 
+def encontrar_aba(sheet_names: List[str], candidatas: List[str]) -> str:
+    mapa = {str(nome).strip().casefold(): nome for nome in sheet_names}
+    for candidata in candidatas:
+        encontrada = mapa.get(candidata.strip().casefold())
+        if encontrada:
+            return encontrada
+    raise ValueError(f"Nenhuma aba encontrada entre as opções: {', '.join(candidatas)}")
+
+
+def encontrar_coluna(df: pd.DataFrame, aliases: List[str]) -> str | None:
+    mapa = {str(coluna).strip().casefold(): coluna for coluna in df.columns}
+    for alias in aliases:
+        encontrada = mapa.get(alias.strip().casefold())
+        if encontrada:
+            return encontrada
+    return None
+
+
 def localizar_arquivos(downloads_dir: Path) -> List[Path]:
     if not downloads_dir.exists():
         logging.warning("Pasta de downloads não encontrada: %s", downloads_dir)
@@ -194,9 +215,11 @@ def localizar_arquivos(downloads_dir: Path) -> List[Path]:
 
 
 def extrair_data_informacao(caminho_arquivo: Path) -> date:
+    workbook = pd.ExcelFile(caminho_arquivo, engine="openpyxl")
+    aba_source_data = encontrar_aba(workbook.sheet_names, ABAS_SOURCE_DATA)
     df_source_data = pd.read_excel(
-        caminho_arquivo,
-        sheet_name="Source Data",
+        workbook,
+        sheet_name=aba_source_data,
         header=None,
         engine="openpyxl",
         dtype=str,
@@ -206,17 +229,17 @@ def extrair_data_informacao(caminho_arquivo: Path) -> date:
     for _, linha in df_source_data.iterrows():
         valores = [str(valor).strip() for valor in linha.tolist() if str(valor).strip()]
         for indice, valor in enumerate(valores):
-            if valor == "Selected Dates":
+            if valor.strip().casefold() in {chave.casefold() for chave in CHAVES_SELECTED_DATES}:
                 if indice + 1 >= len(valores):
                     raise ValueError("Campo 'Selected Dates' sem valor correspondente.")
                 return validar_selected_dates(valores[indice + 1])
 
-    raise ValueError("Campo 'Selected Dates' não encontrado na aba 'Source Data'.")
+    raise ValueError("Campo 'Selected Dates' não encontrado na aba de origem.")
 
 
 def validar_selected_dates(valor: str) -> date:
     texto = " ".join(str(valor).split())
-    partes = re.split(r"\s+at\u00e9\s+", texto, maxsplit=1, flags=re.IGNORECASE)
+    partes = re.split(r"\s+(?:at\u00e9|to)\s+", texto, maxsplit=1, flags=re.IGNORECASE)
     if len(partes) != 2:
         raise ValueError(
             "Valor do campo 'Selected Dates' fora do formato esperado: "
@@ -224,8 +247,8 @@ def validar_selected_dates(valor: str) -> date:
         )
 
     data_inicial_str, data_final_str = [parte.strip() for parte in partes]
-    data_inicial = datetime.strptime(data_inicial_str, "%m/%d/%Y").date()
-    data_final = datetime.strptime(data_final_str, "%m/%d/%Y").date()
+    data_inicial = parse_data_relatorio(data_inicial_str)
+    data_final = parse_data_relatorio(data_final_str)
 
     if data_inicial != data_final:
         raise ValueError(ERRO_DATA_INVALIDA)
@@ -233,10 +256,22 @@ def validar_selected_dates(valor: str) -> date:
     return data_inicial
 
 
+def parse_data_relatorio(valor: str) -> date:
+    formatos = ["%m/%d/%Y", "%d/%m/%Y", "%Y-%m-%d"]
+    for formato in formatos:
+        try:
+            return datetime.strptime(valor, formato).date()
+        except ValueError:
+            continue
+    raise ValueError(f"Data fora do formato esperado: {valor!r}")
+
+
 def ler_relatorio(caminho_arquivo: Path) -> pd.DataFrame:
+    workbook = pd.ExcelFile(caminho_arquivo, engine="openpyxl")
+    aba_report = encontrar_aba(workbook.sheet_names, ABAS_REPORT)
     df_report = pd.read_excel(
-        caminho_arquivo,
-        sheet_name="Report",
+        workbook,
+        sheet_name=aba_report,
         engine="openpyxl",
     )
     df_report.columns = [str(coluna).strip() for coluna in df_report.columns]
@@ -248,15 +283,26 @@ def ler_relatorio(caminho_arquivo: Path) -> pd.DataFrame:
         if nome_coluna.startswith("unnamed") and primeiro_texto == "no data found":
             raise ValueError("ARQUIVO SEM DADOS")
 
-    faltantes = [coluna for coluna in COLUNAS_OBRIGATORIAS_REPORT if coluna not in df_report.columns]
+    colunas_resolvidas: dict[str, str] = {}
+    faltantes = []
+    for coluna_destino, aliases in MAPA_COLUNAS_REPORT.items():
+        coluna_encontrada = encontrar_coluna(df_report, aliases)
+        if not coluna_encontrada:
+            faltantes.append("/".join(aliases))
+            continue
+        colunas_resolvidas[coluna_destino] = coluna_encontrada
+
     if faltantes:
         raise ValueError(
             "Colunas obrigatórias ausentes na aba 'Report': " + ", ".join(faltantes)
         )
 
-    colunas_selecionadas = list(COLUNAS_OBRIGATORIAS_REPORT)
-    if COLUNA_STORE_CODE in df_report.columns:
-        colunas_selecionadas.append(COLUNA_STORE_CODE)
+    df_report = df_report.rename(columns={origem: destino for destino, origem in colunas_resolvidas.items()})
+    coluna_store_code = encontrar_coluna(df_report, COLUNA_STORE_CODE_ALIASES)
+    colunas_selecionadas = list(MAPA_COLUNAS_REPORT.keys())
+    if coluna_store_code:
+        df_report = df_report.rename(columns={coluna_store_code: "store_code"})
+        colunas_selecionadas.append("store_code")
 
     return df_report[colunas_selecionadas].copy()
 
@@ -306,28 +352,17 @@ def normalizar_store_code(valor) -> str | None:
 
 
 def normalizar_dados(df_report: pd.DataFrame, data_informacao: date) -> pd.DataFrame:
-    df = df_report.rename(
-        columns={
-            "Store": "store",
-            "PLU": "plu",
-            "PLU (Items)": "plu_item",
-            "Name": "nome_produto",
-            "Type": "tipo",
-            "Qty": "quantidade",
-            "Price": "preco_unitario",
-            "Total": "valor_total",
-        }
-    ).copy()
+    df = df_report.copy()
 
     # Remove linhas completamente vazias antes de aplicar qualquer regra.
     df = df.dropna(how="all")
 
-    if COLUNA_STORE_CODE in df.columns:
-        df[COLUNA_STORE_CODE] = df[COLUNA_STORE_CODE].map(normalizar_store_code)
+    if "store_code" in df.columns:
+        df["store_code"] = df["store_code"].map(normalizar_store_code)
         df["store"] = df.apply(
             lambda linha: (
-                f"{linha[COLUNA_STORE_CODE]} - {linha['store']}"
-                if pd.notna(linha.get(COLUNA_STORE_CODE)) and pd.notna(linha.get("store"))
+                f"{linha['store_code']} - {linha['store']}"
+                if pd.notna(linha.get("store_code")) and pd.notna(linha.get("store"))
                 else linha.get("store")
             ),
             axis=1,
@@ -501,6 +536,8 @@ def main() -> None:
                     ",".join(lojas_arquivo),
                     linhas_inseridas,
                 )
+                arquivo.unlink()
+                logging.info("ARQUIVO_REMOVIDO | arquivo=%s", arquivo.name)
             except Exception as exc:
                 conn.rollback()
                 if str(exc) == "ARQUIVO SEM DADOS":
